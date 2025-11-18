@@ -1,0 +1,6 @@
+# Use full package to ensure ui.ag_ui module is available; requires Python 3.10+
+pydantic-ai[ag-ui]
+fastapi
+uvicorn[standard]
+python-dotenv
+ag-ui-protocol
