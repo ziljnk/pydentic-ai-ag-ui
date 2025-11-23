@@ -8,10 +8,20 @@ export interface ChatMessage {
   error?: string
   pending?: boolean
   chunks?: string[]
+  toolCalls?: ToolCall[]
+}
+
+export interface ToolCall {
+  id: string
+  name: string
+  args: string
+  result?: string
+  isPending: boolean
 }
 
 interface SendOptions {
   stateDocument?: string
+  frontendTools?: any[]
 }
 
 function uuid() {
@@ -25,6 +35,7 @@ export const useChatStore = defineStore('chat', {
     streaming: false,
     endpoint: getChatEndpoint(),
     threadId: 'thread-' + uuid(),
+    registeredTools: {} as Record<string, any>,
   }),
   getters: {
     ordered(state) {
@@ -32,6 +43,12 @@ export const useChatStore = defineStore('chat', {
     },
   },
   actions: {
+    registerTool(name: string, def: any) {
+      this.registeredTools[name] = def
+    },
+    unregisterTool(name: string) {
+      delete this.registeredTools[name]
+    },
     async sendMessage(text: string, opts: SendOptions = {}) {
       if (!text.trim()) return
       const userMsg: ChatMessage = { id: uuid(), role: 'user', content: text }
@@ -46,11 +63,38 @@ export const useChatStore = defineStore('chat', {
       this.messages.push(assistantMsg)
       const assistantMessage = this.messages[this.messages.length - 1]
 
-      const appendChunk = (delta: string) => {
+      const handleEvent = (event: any) => {
         if (!assistantMessage) return
-        assistantMessage.chunks = assistantMessage.chunks || []
-        assistantMessage.chunks.push(delta)
-        assistantMessage.content = assistantMessage.chunks.join('')
+        
+        if (event.type === 'TEXT_MESSAGE_CONTENT') {
+          const delta = event.delta
+          assistantMessage.chunks = assistantMessage.chunks || []
+          assistantMessage.chunks.push(delta)
+          assistantMessage.content = assistantMessage.chunks.join('')
+        } else if (event.type === 'TOOL_CALL_START') {
+          if (!assistantMessage.toolCalls) assistantMessage.toolCalls = []
+          assistantMessage.toolCalls.push({
+            id: event.toolCallId,
+            name: event.toolCallName,
+            args: '',
+            isPending: true
+          })
+        } else if (event.type === 'TOOL_CALL_ARGS') {
+          const toolCall = assistantMessage.toolCalls?.find(tc => tc.id === event.toolCallId)
+          if (toolCall) {
+            toolCall.args += event.delta
+          }
+        } else if (event.type === 'TOOL_CALL_END') {
+          const toolCall = assistantMessage.toolCalls?.find(tc => tc.id === event.toolCallId)
+          if (toolCall) {
+            toolCall.isPending = false
+          }
+        } else if (event.type === 'TOOL_CALL_RESULT') {
+          const toolCall = assistantMessage.toolCalls?.find(tc => tc.id === event.toolCallId)
+          if (toolCall) {
+            toolCall.result = event.content
+          }
+        }
       }
 
       const setContent = (value: string) => {
@@ -61,18 +105,26 @@ export const useChatStore = defineStore('chat', {
       this.loading = true
       this.streaming = true
 
+      // Collect registered tools
+      const dynamicTools = Object.values(this.registeredTools).map((t: any) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters
+      }))
+
       const payload = buildPayload({
         threadId: this.threadId,
         userMessageId: userMsg.id,
         text,
         stateDocument: opts.stateDocument,
+        frontendTools: [...(opts.frontendTools || []), ...dynamicTools],
       })
 
       try {
         const { received, raw } = await streamViaFetch({
           endpoint: this.endpoint,
           payload,
-          onDelta: appendChunk,
+          onEvent: handleEvent,
         })
 
         if (!received) {
@@ -114,11 +166,13 @@ function buildPayload({
   userMessageId,
   text,
   stateDocument,
+  frontendTools,
 }: {
   threadId: string
   userMessageId: string
   text: string
   stateDocument?: string
+  frontendTools?: any[]
 }): ChatPostPayload {
   return {
     threadId,
@@ -130,7 +184,10 @@ function buildPayload({
         content: text,
       },
     ],
-    state: { document: stateDocument || '' },
+    state: { 
+      document: stateDocument || '',
+      frontend_tools: frontendTools || []
+    },
     tools: [],
     context: [],
     forwardedProps: {},
@@ -140,11 +197,11 @@ function buildPayload({
 async function streamViaFetch({
   endpoint,
   payload,
-  onDelta,
+  onEvent,
 }: {
   endpoint: string
   payload: ChatPostPayload
-  onDelta: (delta: string) => void
+  onEvent: (event: any) => void
 }): Promise<{ received: boolean; raw: string }> {
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -174,11 +231,10 @@ async function streamViaFetch({
     const lines = chunk.split(/\r?\n/)
     for (const line of lines) {
       const event = parseEventLine(line)
-      const delta = extractDelta(event)
-      if (delta) {
+      if (event) {
         received = true
-        collected.push(delta)
-        onDelta(delta)
+        // collected.push(JSON.stringify(event)) // Optional: collect raw events if needed
+        onEvent(event)
       }
     }
   }

@@ -26,6 +26,20 @@ class DocumentState(BaseModel):
     """Shared document state synchronized with the frontend via AG-UI."""
 
     document: str = ""
+    frontend_tools: list[dict] = []
+
+
+def system_instructions(ctx: RunContext[StateDeps[DocumentState]]) -> str:
+    base = "You are a helpful assistant."
+    if ctx.deps.state.frontend_tools:
+        import json
+        tools_json = json.dumps(ctx.deps.state.frontend_tools, indent=2)
+        base += (
+            f"\n\nThe user has defined the following tools that can be executed on the frontend.\n"
+            f"To execute one of these, use the `execute_frontend_tool` tool with the exact name and arguments.\n"
+            f"Available Frontend Tools:\n{tools_json}"
+        )
+    return base
 
 
 # Initialize the Pydantic AI agent with Gemini backend
@@ -33,9 +47,7 @@ class DocumentState(BaseModel):
 # Ensure GEMINI_API_KEY is set in your .env file.
 agent = Agent(
     "google-gla:gemini-2.5-flash",  # adjust model name if needed per pydantic-ai docs
-    instructions=(
-        "You are a helpful assistant"
-    ),
+    instructions=system_instructions,
     deps_type=StateDeps[DocumentState],
 )
 
@@ -48,10 +60,29 @@ async def sync_state_with_frontend(ctx: RunContext[StateDeps[DocumentState]]) ->
     return f"State length: {len(ctx.deps.state.document)}"
 
 
+@agent.tool
+async def execute_frontend_tool(ctx: RunContext[StateDeps[DocumentState]], tool_name: str, args: dict) -> str:
+    """
+    Execute a tool that is defined on the frontend.
+    
+    Args:
+        tool_name: The name of the tool to execute (must match one of the available frontend tools).
+        args: A dictionary of arguments to pass to the tool.
+    """
+    return f"Frontend tool '{tool_name}' execution requested with args: {args}"
+
+
 @agent.tool_plain
 async def send_counter_events() -> str:
     """Compatibility tool: return plain string instead of custom AG-UI events."""
     return "Counter events not emitted (compat mode)"
+
+
+@agent.tool_plain
+async def get_weather(location: str) -> str:
+    """Get the weather for a location."""
+    return f"The weather in {location} is sunny."
+
 
 
 app = FastAPI(title="Pydantic AI + AG-UI + Gemini (FastAPI)")

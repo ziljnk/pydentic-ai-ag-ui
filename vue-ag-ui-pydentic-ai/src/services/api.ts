@@ -29,7 +29,10 @@ export interface ChatPostPayload {
     role: 'user' | 'assistant' | 'system'
     content: string
   }>
-  state?: { document?: string }
+  state?: { 
+    document?: string
+    frontend_tools?: any[]
+  }
   tools?: any[]
   context?: any[]
   forwardedProps?: Record<string, unknown>
